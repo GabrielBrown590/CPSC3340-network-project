@@ -1,0 +1,7 @@
+Firmware team log:
+
+- First we are trying to determine the rgb value from the mac address:
+- Made a function to write the mac address into an int buffer, then just take the last 3 values of that buffer as rgb.
+- Doing WiFi.macAdress was not working, so switched to esp_read_mac from esp_mac.h, which worked.
+- Successfully stored last 3 numbers of mac address into 8 bit int as originRed, originGreen, originBlue.
+- Tested the LED by alternating colors, it worked. 
