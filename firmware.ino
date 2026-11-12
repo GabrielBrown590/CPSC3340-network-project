@@ -68,21 +68,22 @@ void loop() {
   int buttonState = digitalRead(buttonPin);
   Serial.println(buttonState);
   if (buttonState == LOW) {
-    currState = MESSAGE;
+    // send message here
   }
   if (currState == INRANGE) {
     setColor(0, 255, 0);
-    delay(1000);
+    // look for incoming messages from queue here (if nonempty). Otherwise, become OUTOFRANGE.
     currState = OUTOFRANGE;
   } else if (currState == OUTOFRANGE) {
     setColor(255, 0, 0);
-    delay(1000);
+    // look for heartbeat here
     currState = INRANGE;
+    
   } else if (currState == MESSAGE) {
     // determine color of incoming message rgb (blue for now)
 
-    setColor(originRed, originGreen, originBlue);
-    delay(100);
+    setColor(0, 0, 255);
+    delay(1000);
     currState = INRANGE;
   }
 }
