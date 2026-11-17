@@ -762,7 +762,6 @@ void heartbeat()
   heartBeat.ttl = 0;
 
   esp_now_send(allRecieverMac, (uint8_t *) &heartBeat, sizeof(heartBeat));
-  timeSe
 }
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len)
@@ -806,8 +805,6 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
   originRed = (int)mac[3];
   originGreen = (int)mac[4];
   originBlue = (int)mac[5];
@@ -836,14 +833,13 @@ void setup() {
   }
 
   WiFi.mode(WIFI_MODE_STA);
+  esp_read_mac(my_mac, ESP_MAC_WIFI_STA);
   if (esp_now_init() != ESP_OK) 
     {
       Serial.println("Error initializing ESP-NOW");
       return;
     }
   esp_now_register_recv_cb(OnDataRecv); //tell esp which function to run on packet recieve.
-
-  std::queue<msg_t> queue;
 
   timeRecievedLastHeartBeat = millis();
   timeSentLastHeartBeat = millis();
