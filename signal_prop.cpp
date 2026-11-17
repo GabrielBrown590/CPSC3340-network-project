@@ -2,6 +2,28 @@
 #include <esp_now.h>
 #include <stdint.h>
 
+
+/*
+Review notes:
+- ***** The ESP-NOW callback needs to get shorter, turn it into a buffer of messages
+    - This should be able to be done fairly easily by making a bounded queue
+    - Make sure to memcpy and not just point
+- Broadcast storm can be produced if two nodes rebroadcast at the same time (transmissions overlap)
+    - Messages should be *scheduled* for retransmission after a randomized delay (jitter of 20-100 ms)
+    - Will need to add a placeholder for scheduling a message with jitter, rather than just broadcasting it
+- The randKey method could fail if a message with an old randKey appears after a new randKey message
+    - Could just check a lastRandKey on each MAC, initialized to -1
+    - Making uint32_t for seq could also resolve the issue (less likelihood of overflow)
+- Delivery report strategy could cause very high traffic
+    - Could just hang on to this information until requested... remove it if it is a problem
+- ***** Must check origin of all messages and not propagate messages you sent
+- ***** Don't prevent retransmit of nodes that have TTL 0 (in case higher TTL comes along)
+- Using fixed arrays could be better than all the mallocs and pointers (refactor idea)
+- Need to look over allocations and linked lists... likely some bugs
+
+Otherwise looks good!
+*/
+
 // TODO
 // Can resetting of the hasReceived list be done with memSet instead of a loop?
 
@@ -12,7 +34,7 @@
 Merge Guidelines:
 
 - Only increment seq for button presses and delivery reports. To safely increment it (overflow), use get_next_seq()
-- broadcast_message should have some random delay added to it to avoid collisions. Sending the same message multiple times with delay in between will also help reliability (via redundancy)
+- broadcast_message should have some random delay added to it to avoid collisions. Sending the same message multiple times with delay in between (on both original and re-transmission) will also help reliability (via redundancy)
 */
 
 // -------------------------
@@ -22,7 +44,7 @@ Merge Guidelines:
 #define VERSION 1
 #define REC_BUF_SIZE 10
 #define INT_OVERFLOW_BUFFER 10
-#define MAC_LIST_CAP 20
+#define MAC_LIST_CAP 20 // Must be higher than number of ESP's in network!!
 #define SEND_LOG_LIST_CAP 20
 #define REC_LOG_LIST_CAP 100
 #define TTL_START 15
