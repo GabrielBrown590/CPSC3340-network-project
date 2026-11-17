@@ -199,7 +199,7 @@ QueueHandle_t receivedQueue = NULL;
 // Helper Functions
 // -------------------------
 
-// PLACEHOLDER: Button message handler
+// Button message handler
 void handle_button_message(msg_t *message) {
     currState = MESSAGE;
     messageRed = message.r;
@@ -208,9 +208,9 @@ void handle_button_message(msg_t *message) {
     timeToReset = millis() + 3000;
 }
 
-// PLACEHOLDER: Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
+// Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
 void broadcast_message(msg_t *message) {
-    return;
+    esp_now_send(allRecieverMac, (uint8_t *) message, sizeof(message));
 }
 
 // PLACEHOLDER: Helper to schedule a message for broadcast at a millis() timestamp (message argument will be deallocated shortly after return)
@@ -218,7 +218,7 @@ void schedule_broadcast_message(msg_t *message, unsigned long send_time) {
     return;
 }
 
-// PLACEHOLDER: Gives a random key between 1 and UINT32_MAX
+// Gives a random key between 1 and UINT32_MAX
 uint32_t get_rand_key() {
     uint32_t upper = random(0, UINT16_MAX + 1);
     uint32_t lower = random(1, UINT16_MAX + 1);
@@ -545,6 +545,9 @@ void send_delivery_report(msg_t *message) {
     delivery_report.originalSeq = message->seq;
     delivery_report.ttl = TTL_START;
 
+    /*
+    Holdover from scheduling redundancy:
+
     // Schedule attempts of the delivery report broadcast
     unsigned long base_time = millis();
 
@@ -553,6 +556,10 @@ void send_delivery_report(msg_t *message) {
         schedule_broadcast_message(&delivery_report, send_time);
         base_time += DELIVERY_REPORT_JITTER_HIGH_MS;
     }
+    */
+
+    // Send delivery report immediately
+    broadcast_message(&delivery_report);
 }
 
 // Helper function to construct the propagated message (decrement TTL) and broadcast it
@@ -564,6 +571,9 @@ void exec_message_prop(msg_t *message) {
 
     // Decrement TTL
     propagated_message.ttl--;
+
+    /*
+    Holdover from scheduling redundancy:
 
     // Schedule attempts of the propagation broadcast
     unsigned long base_time = millis();
@@ -581,6 +591,10 @@ void exec_message_prop(msg_t *message) {
         schedule_broadcast_message(&propagated_message, send_time);
         base_time += jitter_high;
     }
+    */
+
+     // Send propagated message immediately
+    broadcast_message(&propagated_message);
 }
 
 // Helper to be called by handle_message_prop() when message is BUTTON or DELIVERY_REPORT type and has yet to be received
