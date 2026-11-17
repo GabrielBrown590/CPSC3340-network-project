@@ -211,9 +211,6 @@ bool should_prop(msg_t message, Linked_List *list){
         }
         curr = curr->next;
     }
-
-
-
 }
 
 
@@ -221,8 +218,6 @@ bool should_prop(msg_t message, Linked_List *list){
 
 
 void OnDataRecv(const esp_now_rec_info *recv_info, const uint_8 *incomingData, int len){
-
     memcpy(&curr_message, incomingData, sizeof(curr_message));
-
 }
 
