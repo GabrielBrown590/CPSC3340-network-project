@@ -8,6 +8,27 @@
 #define TIMETILLOUTOFNET 3 * 1000
 const uint8_t allRecieverMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 esp_now_peer_info_t broadcastPeer;
+msg_t recievedMessage;
+
+// the rgb values of this pod as an originator
+int originRed = 0;
+int originGreen = 0;
+int originBlue = 0;
+
+// the rgb values of message
+int messageRed = 0;
+int messageGreen = 0;
+int messageBlue = 0;
+
+const int redPin = 16;
+const int greenPin = 17;
+const int bluePin = 18;
+
+const int buttonPin = 15;
+
+enum LED_STATE {INRANGE, OUTOFRANGE, MESSAGE};
+
+LED_STATE currState = INRANGE;
 
 typedef struct __attribute__((packed)) {
   uint8_t  ver;       // protocol version; reject mismatches
@@ -19,9 +40,6 @@ typedef struct __attribute__((packed)) {
   uint8_t  ttl;       // remaining hops
   uint8_t  r, g, b;   // origin's color
 } msg_t;
-
-msg_t recievedMessage;
-
 
 void heartbeat()
 {
@@ -52,8 +70,12 @@ void popQueue()
   {
     inNetwork = true;
     timeRecievedLastHeartBeat = millis();
+    currState = INRANGE;
   } else if (q_msg.type == 1) {
-    // TODO: Add button recieving code
+    currState = MESSAGE;
+    messageRed = q_msg.r;
+    messageGreen = q_msg.g;
+    messageBlue = q_msg.b;
   }
 }
 
@@ -269,6 +291,23 @@ bool should_prop(msg_t message, Linked_List *list){
         }
         curr = curr->next;
     }
+}
+
+void rgbFromMAC() {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  originRed = (int)mac[3];
+  originGreen = (int)mac[4];
+  originBlue = (int)mac[5];
+  Serial.println(originRed);
+  Serial.println(originGreen);
+  Serial.println(originBlue);
+}
+
+void setColor(int r, int g, int b) {
+  analogWrite(redPin, r);
+  analogWrite(greenPin, g);
+  analogWrite(bluePin, b);
 }
 
 void setup() {
