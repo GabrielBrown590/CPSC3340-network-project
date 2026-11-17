@@ -1,40 +1,23 @@
 #include <WiFi.h> 
 #include <esp_now.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 /*
-Review notes:
-- ***** The ESP-NOW callback needs to get shorter, turn it into a buffer of messages
-    - This should be able to be done fairly easily by making a bounded queue
-    - Make sure to memcpy and not just point
-- Broadcast storm can be produced if two nodes rebroadcast at the same time (transmissions overlap)
-    - Messages should be *scheduled* for retransmission after a randomized delay (jitter of 20-100 ms)
-    - Will need to add a placeholder for scheduling a message with jitter, rather than just broadcasting it
-- The randKey method could fail if a message with an old randKey appears after a new randKey message
-    - Could just check a lastRandKey on each MAC, initialized to -1
-    - Making uint32_t for seq could also resolve the issue (less likelihood of overflow)
-- Delivery report strategy could cause very high traffic
-    - Could just hang on to this information until requested... remove it if it is a problem
-- ***** Must check origin of all messages and not propagate messages you sent
-- ***** Don't prevent retransmit of nodes that have TTL 0 (in case higher TTL comes along)
+Notes:
 - Using fixed arrays could be better than all the mallocs and pointers (refactor idea)
-- Need to look over allocations and linked lists... likely some bugs
-
-Otherwise looks good!
+- Mention the edge case of no sliding window when transitioning sessions (could also increase sequence number)
+- Mention the behavior of higher TTLs being ignored and implications on logging
 */
-
-// TODO
-// Can resetting of the hasReceived list be done with memSet instead of a loop?
-
-// Review the code
-// Maybe change receivedMessage to a buffer.. or just add a note about it
 
 /*
 Merge Guidelines:
-
 - Only increment seq for button presses and delivery reports. To safely increment it (overflow), use get_next_seq()
-- broadcast_message should have some random delay added to it to avoid collisions. Sending the same message multiple times with delay in between (on both original and re-transmission) will also help reliability (via redundancy)
+- process_received_message() must be called in loop() in order to execute propagation and message processing for BUTTON and DELAY_REPORT messages
 */
 
 // -------------------------
@@ -42,12 +25,19 @@ Merge Guidelines:
 // -------------------------
 
 #define VERSION 1
-#define REC_BUF_SIZE 10
+#define HAS_RECEIVED_SIZE 10
 #define INT_OVERFLOW_BUFFER 10
 #define MAC_LIST_CAP 20 // Must be higher than number of ESP's in network!!
 #define SEND_LOG_LIST_CAP 20
 #define REC_LOG_LIST_CAP 100
 #define TTL_START 15
+#define RECEIVED_MSG_QUEUE_SIZE 100
+#define DELIVERY_REPORT_SEND_NUM 1
+#define PROPAGATION_SEND_NUM 2
+#define BUTTON_JITTER_LOW_MS 20
+#define BUTTON_JITTER_HIGH_MS 100
+#define DELIVERY_REPORT_JITTER_LOW_MS 150
+#define DELIVERY_REPORT_JITTER_HIGH_MS 500
 
 // -------------------------
 // Structures
@@ -75,18 +65,19 @@ typedef struct __attribute__((packed)) {
 } msg_t;
 
 // Structure for a (doubly) linked list node, tracking a MAC-identified message source
-typedef struct node {
+typedef struct mac_node {
     uint8_t mac[6];                         // Unique MAC address of the message source
     uint32_t randKey;                       // Random key of the message source
+    uint32_t lastRandKey;                   // The last random key associated with this message source, to avoid duplicated messages during key transitions
 
     uint16_t lastReceived;                  // Sequence number of the last message received
-    bool hasReceived[REC_BUF_SIZE];         // Buffer of the last REC_BUF_SIZE messages (sequence number) below lastReceived and if they have been received ("high" to low sequence number)
+    bool hasReceived[HAS_RECEIVED_SIZE];    // Buffer of the last HAS_RECEIVED_SIZE messages (sequence number) below lastReceived and if they have been received ("high" to low sequence number)
 
-    struct node *next;                      // Next node in the linked list
-    struct node *prev;                      // Previous node in the linked list
+    struct mac_node *next;                      // Next node in the linked list
+    struct mac_node *prev;                      // Previous node in the linked list
 } mac_node_t;
 
-// Structure for a (doubly) linked list
+// Structure for a (doubly) linked list of MAC-identified message sources
 typedef struct {
     mac_node_t *head;       // Pointer to first node in list, or NULL
     mac_node_t *tail;       // Pointer to last node in list, or NULL
@@ -96,35 +87,36 @@ typedef struct {
 } mac_list_t;
 
 // Structure for a received message log as a (doubly) linked list node
-typedef struct node {
+typedef struct rec_node {
     uint8_t origin[6];
     uint32_t randKey;
 
     uint16_t seq;
     uint8_t hopCount;
 
-    struct node *next;
-    struct node *prev;
+    struct rec_node *next;
+    struct rec_node *prev;
 } rec_log_t;
 
 // Structure for a sent message recipient as a linked list node
-typedef struct node {
+typedef struct sent_rec_node {
     uint8_t mac[6];
 
-    struct node *next;
+    struct sent_rec_node *next;
 } send_recipient_t;
 
 // Structure for a sent message log as a (doubly) linked list node
-typedef struct node {
+typedef struct sent_node {
     uint32_t randKey;
     uint16_t seq;
 
     send_recipient_t *recipients_head;
 
-    struct node *next;
-    struct node *prev;
+    struct sent_node *next;
+    struct sent_node *prev;
 } send_log_t;
 
+// Structure for a (doubly) linked list of received message logs
 typedef struct {
     rec_log_t *head;
     rec_log_t *tail;
@@ -133,19 +125,19 @@ typedef struct {
     int capacity;
 } rec_log_list_t;
 
+// Structure for a (doubly) linked list of sent message logs
 typedef struct {
     send_log_t *head;
     send_log_t *tail;
 
-    int size;
-    int capacity;
+    size_t size;
+    size_t capacity;
 } send_log_list_t;
 
 // -------------------------
 // Global Variables
 // -------------------------
 
-msg_t receivedMessage;
 mac_list_t macList {
     NULL,
     NULL,
@@ -169,6 +161,20 @@ uint8_t my_mac[6] = {0, 0, 0, 0, 0, 0}; // MAC address of this ESP32, must be in
 uint32_t my_rand_key = 0;
 uint16_t my_seq = 0;
 
+QueueHandle_t receivedQueue = NULL;
+
+// -------------------------
+// For setup()
+// -------------------------
+
+// Set up receivedQueue
+receivedQueue = xQueueCreate(RECEIVED_MSG_QUEUE_SIZE, sizeof(msg_t));
+
+if (receivedQueue == NULL) {
+    // ERROR: receivedQueue could not be instantiated
+    abort();
+}
+
 // -------------------------
 // Helper Functions
 // -------------------------
@@ -178,14 +184,21 @@ void handle_button_message(msg_t *message) {
     return;
 }
 
-// PLACEHOLDER: Helper to broadcast a message
+// PLACEHOLDER: Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
 void broadcast_message(msg_t *message) {
     return;
 }
 
-// PLACEHOLDER: Gives a random key
+// PLACEHOLDER: Helper to schedule a message for broadcast at a millis() timestamp (message argument will be deallocated shortly after return)
+void schedule_broadcast_message(msg_t *message, unsigned long send_time) {
+    return;
+}
+
+// PLACEHOLDER: Gives a random key between 1 and UINT32_MAX
 uint32_t get_rand_key() {
-    return 0;
+    uint32_t upper = random(0, UINT16_MAX + 1);
+    uint32_t lower = random(1, UINT16_MAX + 1);
+    return (upper << 16) | lower;
 }
 
 // Helper to update and return the new sequence number, accounting for integer overflow
@@ -199,7 +212,7 @@ uint16_t get_next_seq() {
         my_seq++;
     }
 
-    return my_seq
+    return my_seq;
 }
 
 // Checks if MAC addresses are identical
@@ -211,106 +224,10 @@ bool mac_equal(uint8_t mac1[6], uint8_t mac2[6]){
     return true;
 }
 
-// Updates the MAC address for a macList node
-void update_mac(mac_node_t *node, uint8_t mac[6]) {
-    for (size_t i = 0; i < 6; i++) {
-        node->mac[i] = mac[i];
-    }
-}
-
-// Updates the MAC address for a send recipient
-void update_send_recipient_mac(send_recipient_t *node, uint8_t mac[6]) {
-    for (size_t i = 0; i < 6; i++) {
-        node->mac[i] = mac[i];
-    }
-}
-
-// Updates the MAC address for a recipient log node
-void update_rec_log_mac(rec_log_t *node, uint8_t mac[6]) {
-    for (size_t i = 0; i < 6; i++) {
-        node->mac[i] = mac[i];
-    }
-}
-
-// Updates the MAC address for a message origin
-void update_origin_mac(msg_t *node, uint8_t mac[6]) {
-    for (size_t i = 0; i < 6; i++) {
-        node->origin[i] = mac[i];
-    }
-}
-
-// Updates the MAC address for a message original sender
-void update_original_sender_mac(msg_t *node, uint8_t mac[6]) {
-    for (size_t i = 0; i < 6; i++) {
-        node->originalSender[i] = mac[i];
-    }
-}
-
-// Helper for adding a new macList node for the contents of receivedMessage when the list is full
-// New node will replace the reference node and be moved to the front of the list
-void update_mac_node(mac_node_t *node) {
-    // Assign the MAC address and randKey of the node, identifies the specific ESP and boot/overflow cycle
-    update_mac(node, receivedMessage.origin);
-    node->randKey = receivedMessage.randKey;
-
-    // Reset hasReceived as all false aside from the received sequence number, and reset lastReceived as the sequence number
-    node->hasReceived[0] = true; 
-
-    for (size_t i = 1; i < REC_BUFF_SIZE; i++){
-        node->hasReceived[i] = false;
-    }
-
-    node->lastReceived = receivedMessage.seq;
-
-    // Insert new node at the head of macList
-    node->prev = NULL;
-    node->next = macList->head;
-    if (macList->head) {
-        macList->head->prev = node;
-    }
-    macList->head = node;
-}
-
-// Helper for creating a new macList node for the contents of receivedMessage and moving it to the front of the list
-void create_mac_node(){
-    // Initialize a new macList node in heap memory
-    mac_node_t *new_node = malloc(sizeof(mac_node_t));
-
-    // Check if malloc was successful
-    if (!new_node){ 
-        // ERROR: Malloc failed
-        return;
-    }
-
-    // Assign the MAC address and randKey of the node, identifies the specific ESP and boot/overflow cycle
-    update_mac(new_node, receivedMessage.origin);
-    new_node->randKey = receivedMessage.randKey;
-
-    // Initialize hasReceived as all false aside from the received sequence number, and initialize lastReceived as the sequence number
-    new_node->hasReceived[0] = true; 
-
-    for (size_t i = 1; i < REC_BUFF_SIZE; i++){
-        new_node->hasReceived[i] = false;
-    }
-
-    new_node->lastReceived = receivedMessage.seq;
-
-    // Insert new node at the head of macList
-    new_node->prev = NULL;
-    new_node->next = macList->head;
-    if (macList->head) {
-        macList->head->prev = new_node;
-    }
-    macList->head = node;
-
-    // Update the size of macList to reflect insertion
-    macList->size++;
-}
-
 // Helper for moving a macList node to the front of the list, maintaining the LRU invariant
 void move_mac_to_front(mac_node_t *curr){
     // Return early if curr is NULL or already at the front of the list
-    if (!curr || curr == macList->head){
+    if (!curr || curr == macList.head){
         return;
     }
 
@@ -323,67 +240,158 @@ void move_mac_to_front(mac_node_t *curr){
     }
 
     // Update list tail if necessary
-    if (macList->tail == curr){
-        macList->tail = curr->prev;
+    if (macList.tail == curr){
+        macList.tail = curr->prev;
     }
 
     // Insert curr at the front of list
     curr->prev = NULL;
-    curr->next = macList->head;
-    if (macList->head) {
-        macList->head->prev = curr;
+    curr->next = macList.head;
+    if (macList.head) {
+        macList.head->prev = curr;
     }
-    macList->head = curr;
+    macList.head = curr;
+}
+
+// Helper for adding a new macList node for the contents of message when the list is full
+// New node will replace the reference node and be moved to the front of the list
+void update_mac_node(msg_t *message, mac_node_t *node) {
+    // Assign the MAC address and randKey of the node, identifies the specific ESP and boot/overflow cycle
+    move_mac_to_front(node);
+    
+    memcpy(node->mac, message->origin, 6);
+
+    node->randKey = message->randKey;
+    node->lastRandKey = 0;
+
+    // Reset hasReceived as all false aside from the received sequence number, and reset lastReceived as the sequence number
+    memset(node->hasReceived, 0, sizeof(node->hasReceived));
+    
+    node->hasReceived[0] = true; 
+
+    node->lastReceived = message->seq;
+}
+
+// Helper for creating a new macList node for the contents of message and moving it to the front of the list
+// Returns a success status that can be optionally used 
+bool create_mac_node(msg_t *message){
+    // Initialize a new macList node in heap memory
+    mac_node_t *new_node = static_cast<mac_node_t *>(malloc(sizeof(mac_node_t)));
+
+    // Check if malloc was successful
+    if (!new_node){ 
+        // ERROR: Malloc failed
+        return false;
+    }
+
+    // Assign the MAC address and randKey of the node, identifies the specific ESP and boot/overflow cycle
+    memcpy(new_node->mac, message->origin, 6);
+    new_node->randKey = message->randKey;
+    new_node->lastRandKey = 0;
+
+    // Initialize hasReceived as all false aside from the received sequence number, and initialize lastReceived as the sequence number
+    memset(new_node->hasReceived, 0, sizeof(new_node->hasReceived));
+    
+    new_node->hasReceived[0] = true; 
+
+    new_node->lastReceived = message->seq;
+
+    // Insert new node at the head of macList
+    new_node->prev = NULL;
+    new_node->next = macList.head;
+
+    if (macList.head) {
+        macList.head->prev = new_node;
+    }
+    macList.head = new_node;
+
+    if (macList.tail == NULL) {
+        macList.tail = new_node;
+    }
+
+    // Update the size of macList to reflect insertion
+    macList.size++;
+
+    return true;
 }
 
 // Helper to add a new send log to the sendLogs list and pop the last value of the queue if it is over capacity
 void add_send_log(send_log_t *send_log) {
     // Add node to the front of the queue
-    if (sendLogs->head) {
-        sendLogs->head->prev = send_log;
+    if (sendLogs.head) {
+        sendLogs.head->prev = send_log;
     }
-    send_log->next = sendLogs->head;
+    send_log->next = sendLogs.head;
     send_log->prev = NULL;
-    sendLogs->head = send_log;
+    sendLogs.head = send_log;
 
     // Set tail if necessary
-    if (!sendLogs->tail) {
-        sendLogs->tail = send_log;
+    if (!sendLogs.tail) {
+        sendLogs.tail = send_log;
     }
 
     // Check for queue over capacity
-    while sendLogs.size >= sendLogs.capacity {
+    while (sendLogs.size >= sendLogs.capacity) {
         // Remove the tail of the queue
-        if (!sendLogs->tail) {
+        if (!sendLogs.tail) {
             // ERROR: Nothing to remove
             break;
         }
 
-        if (sendLogs->tail->prev) {
-            sendLogs->tail->prev->next = NULL;
-            send_log_t *tmp = sendLogs->tail;
-            sendLogs->tail = sendLogs->tail->prev;
+        if (sendLogs.tail->prev) {
+            sendLogs.tail->prev->next = NULL;
+            send_log_t *tmp = sendLogs.tail;
+            sendLogs.tail = sendLogs.tail->prev;
+
+            send_recipient_t *recipient = tmp->recipients_head;
+
+            while (recipient != NULL) {
+                send_recipient_t *next = recipient->next;
+                free(recipient);
+                recipient = next;
+            }
+
             free(tmp);
         } else {
-            free(sendLogs->tail);
-            sendLogs->head = NULL;
-            sendLogs->tail = NULL;
+            send_recipient_t *recipient = sendLogs.tail->recipients_head;
+
+            while (recipient != NULL) {
+                send_recipient_t *next = recipient->next;
+                free(recipient);
+                recipient = next;
+            }
+
+            free(sendLogs.tail);
+            sendLogs.head = NULL;
+            sendLogs.tail = NULL;
         }
+
+        sendLogs.size--;
     }
 
     // Update size
-    sendLogs->size++;
+    sendLogs.size++;
 }
 
+// *** MIGHT NEED TO FIX** (2.E)
 // Helper to update a send log (add a new recipient) for a new DELIVERY_REPORT
 void update_send_log(msg_t *message) {
     // Find the sent message log based on randKey and seq
-    curr = sendLogs.head;
+    send_log_t *curr = sendLogs.head;
 
     while (curr) {
         if (curr->randKey == message->originalRandKey && curr->seq == message->originalSeq) {
+            send_recipient_t *recipient = curr->recipients_head;
+
+            while (recipient != NULL) {
+                if (mac_equal(recipient->mac, message->origin)) {
+                    return;
+                }
+                recipient = recipient->next;
+            }
+            
             // A sent message log already exists for this message, add the recipient
-            send_recipient_t *new_recipient = malloc(sizeof(send_recipient_t));
+            send_recipient_t *new_recipient = static_cast<send_recipient_t *>(malloc(sizeof(send_recipient_t)));
 
             // Check if malloc was successful
             if (!new_recipient){ 
@@ -392,7 +400,7 @@ void update_send_log(msg_t *message) {
             }
 
             // Add the correct MAC address to the node
-            update_send_recipient_mac(new_recipient, message->origin);
+            memcpy(new_recipient->mac, message->origin, 6);
 
             // Put the node at the head of the linked list
             new_recipient->next = curr->recipients_head;
@@ -405,7 +413,7 @@ void update_send_log(msg_t *message) {
     }
 
     // The send message log was not found, create a new one and add it to the list
-    send_log_t *new_send_log = malloc(sizeof(send_log_t));
+    send_log_t *new_send_log = static_cast<send_log_t *>(malloc(sizeof(send_log_t)));
 
     // Check if malloc was successful
     if (!new_send_log){ 
@@ -416,18 +424,20 @@ void update_send_log(msg_t *message) {
     // Instantiate randKey and seq
     new_send_log->randKey = message->originalRandKey;
     new_send_log->seq = message->originalSeq;
+    new_send_log->recipients_head = NULL;
 
     // Instantiate the send recipients with this new send recipient
-    send_recipient_t *new_recipient = malloc(sizeof(send_recipient_t));
+    send_recipient_t *new_recipient = static_cast<send_recipient_t *>(malloc(sizeof(send_recipient_t)));
 
     // Check if malloc was successful
     if (!new_recipient){ 
         // ERROR: Malloc failed
+        free(new_send_log);
         return;
     }
 
     // Add the correct MAC address to the node
-    update_send_recipient_mac(new_recipient, message->origin);
+    memcpy(new_recipient->mac, message->origin, 6);
 
     // Put the node at the head of the linked list
     new_recipient->next = new_send_log->recipients_head;
@@ -440,7 +450,7 @@ void update_send_log(msg_t *message) {
 // Helper to add a new message reception log to the recLogs list and pop the last value of the queue if it is over capacity
 void add_rec_log(msg_t *message) {
     // The send message log was not found, create a new one and add it to the list
-    rec_log_t *new_rec_log = malloc(sizeof(rec_log_t));
+    rec_log_t *new_rec_log = static_cast<rec_log_t *>(malloc(sizeof(rec_log_t)));
 
     // Check if malloc was successful
     if (!new_rec_log){ 
@@ -449,7 +459,7 @@ void add_rec_log(msg_t *message) {
     }
 
     // Instantiate origin, randKey, and seq
-    update_rec_log_mac(new_rec_log, message->origin);
+    memcpy(new_rec_log->origin, message->origin, 6);
     new_rec_log->randKey = message->randKey;
     new_rec_log->seq = message->seq;
 
@@ -457,59 +467,68 @@ void add_rec_log(msg_t *message) {
     new_rec_log->hopCount = TTL_START - message->ttl + 1;
 
     // Add node to the front of the queue
-    if (recLogs->head) {
-        recLogs->head->prev = new_rec_log;
+    if (recLogs.head) {
+        recLogs.head->prev = new_rec_log;
     }
-    new_rec_log->next = recLogs->head;
+    new_rec_log->next = recLogs.head;
     new_rec_log->prev = NULL;
-    recLogs->head = new_rec_log;
+    recLogs.head = new_rec_log;
 
     // Set tail if necessary
-    if (!recLogs->tail) {
-        recLogs->tail = new_rec_log;
+    if (!recLogs.tail) {
+        recLogs.tail = new_rec_log;
     }
 
     // Check for queue over capacity
-    while recLogs.size >= recLogs.capacity {
+    while (recLogs.size >= recLogs.capacity) {
         // Remove the tail of the queue
-        if (!recLogs->tail) {
+        if (!recLogs.tail) {
             // ERROR: Nothing to remove
             break;
         }
 
-        if (recLogs->tail->prev) {
-            recLogs->tail->prev->next = NULL;
-            rec_log_t *tmp = recLogs->tail;
-            recLogs->tail = recLogs->tail->prev;
+        if (recLogs.tail->prev) {
+            recLogs.tail->prev->next = NULL;
+            rec_log_t *tmp = recLogs.tail;
+            recLogs.tail = recLogs.tail->prev;
             free(tmp);
         } else {
-            free(recLogs->tail);
-            recLogs->head = NULL;
-            recLogs->tail = NULL;
+            free(recLogs.tail);
+            recLogs.head = NULL;
+            recLogs.tail = NULL;
         }
+
+        recLogs.size--;
     }
 
     // Update size
-    recLogs->size++;
+    recLogs.size++;
 }
 
 void send_delivery_report(msg_t *message) {
-    msg_t delivery_report;
+    msg_t delivery_report {};
 
-    delivery_report->ver = VERSION;
-    delivery_report->type = DELIVERY_REPORT;
-    update_origin_mac(delivery_report, my_mac);
-    update_original_sender_mac(delivery_report, message->origin);
-    delivery_report->originalRandKey = message->randKey;
+    delivery_report.ver = VERSION;
+    delivery_report.type = DELIVERY_REPORT;
+    memcpy(delivery_report.origin, my_mac, 6);
+    memcpy(delivery_report.originalSender, message->origin, 6);
+    delivery_report.originalRandKey = message->randKey;
 
     // Must update randKey after seq, in case seq update causes randKey to change
-    delivery_report->seq = get_next_seq();
-    delivery_report->randKey = my_rand_key;
+    delivery_report.seq = get_next_seq();
+    delivery_report.randKey = my_rand_key;
 
-    delivery_report->originalSeq = message->seq;
-    delivery_report->ttl = TTL_START;
+    delivery_report.originalSeq = message->seq;
+    delivery_report.ttl = TTL_START;
 
-    broadcast_message(&delivery_report);
+    // Schedule attempts of the delivery report broadcast
+    unsigned long base_time = millis();
+
+    for (size_t i = 0; i < DELIVERY_REPORT_SEND_NUM; i++) {
+        unsigned long send_time = base_time + random(DELIVERY_REPORT_JITTER_LOW_MS, DELIVERY_REPORT_JITTER_HIGH_MS + 1);
+        schedule_broadcast_message(&delivery_report, send_time);
+        base_time += DELIVERY_REPORT_JITTER_HIGH_MS;
+    }
 }
 
 // Helper function to construct the propagated message (decrement TTL) and broadcast it
@@ -522,99 +541,111 @@ void exec_message_prop(msg_t *message) {
     // Decrement TTL
     propagated_message.ttl--;
 
-    broadcast_message(&propagated_message);
+    // Schedule attempts of the propagation broadcast
+    unsigned long base_time = millis();
+
+    bool is_button = message->type == BUTTON;
+
+    size_t send_num = is_button ? PROPAGATION_SEND_NUM : DELIVERY_REPORT_SEND_NUM;
+
+    long jitter_low = is_button ? BUTTON_JITTER_LOW_MS : DELIVERY_REPORT_JITTER_LOW_MS;
+
+    long jitter_high = is_button ? BUTTON_JITTER_HIGH_MS : DELIVERY_REPORT_JITTER_HIGH_MS;
+
+    for (size_t i = 0; i < send_num; i++) {
+        unsigned long send_time = base_time + random(jitter_low, jitter_high + 1);
+        schedule_broadcast_message(&propagated_message, send_time);
+        base_time += jitter_high;
+    }
 }
 
-// Helper to be called by handle_message_prop() when receivedMessage is BUTTON or DELIVERY_REPORT type and has yet to be received
+// Helper to be called by handle_message_prop() when message is BUTTON or DELIVERY_REPORT type and has yet to be received
 // Must execute the procedure called for by the message, particularly LED control for BUTTON messages
 // Must update local logs according to the message
 // Must create and send a delivery report, if necessary
 // Must propagate the message, contingent on updated TTL and originalSender for DELIVERY_REPORT type
-void process_message_prop() {
+void process_message_prop(msg_t *message) {
     // If message is of type BUTTON, execute the procedure associated with button messages
-    if (receivedMessage.type == BUTTON) {
-        handle_button_message(receivedMessage);
+    if (message->type == BUTTON) {
+        handle_button_message(message);
     }
 
     // Update local logs for the message
-    if (receivedMessage.type == BUTTON) {
+    if (message->type == BUTTON) {
         // Log should be added to the recLogs
-        add_rec_log(receivedMessage);
-    } else if (receivedMessage.type == DELIVERY_REPORT) {
+        add_rec_log(message);
+    } else if (message->type == DELIVERY_REPORT) {
         // Only add a log if it was meant for this MAC address
-        if (mac_equal(receivedMessage.originalSender, my_mac)) {
-            update_send_log(receivedMessage);
+        if (mac_equal(message->originalSender, my_mac)) {
+            update_send_log(message);
             // No work is left for the completed delivery report (will not be propagated), so return early
             return;
         }
     }
 
     // Send a delivery report, if necessary
-    if (receivedMessage.type == BUTTON) {
-        send_delivery_report(receivedMessage);
+    if (message->type == BUTTON) {
+        send_delivery_report(message);
     }
 
     // Update the TTL and propagate the message, if necessary
-    if (receivedMessage.ttl > 0) {
-        exec_message_prop(receivedMessage);
+    if (message->ttl > 0) {
+        exec_message_prop(message);
     }
 }
 
 // Handles the propagation of a message, whether it is BUTTON or DELIVERY_REPORT type
-void handle_message_prop() {
+void handle_message_prop(msg_t *message) {
     // Check if MAC address of message is already registered in macList
     mac_node_t *curr = macList.head;
     
     while (curr) {
         // Check if received MAC matches current node MAC
-        if (mac_equal(receivedMessage.origin, curr->mac)){
+        if (mac_equal(message->origin, curr->mac)){
             // Received MAC matches, check if the randKey matches
             // If randKey does not match, the sender has likely rebooted or overflown since last received message, so we need to reset tracking
-            if (receivedMessage.randKey == curr->randKey){
+            if (message->randKey == curr->randKey){
                 // Sender node likely hasn't rebooted nor overflown since last received message
 
                 // Sequence number can be trusted to identify "order" of messages. Use to determine if message should propagate or not
-                if (receivedMessage.seq > curr->lastReceived){
+                if (message->seq > curr->lastReceived){
                     // This is definitely a message we have not received yet
                     // We must shift hasReceived and update lastReceived
 
-                    // Shift hasReceived to track entries of sequence numbers [receivedMessage.seq - REC_BUF_SIZE + 1, receivedMessage.seq]
-                    size_t diff = receivedMessage.seq - curr->lastReceived;
+                    // Shift hasReceived to track entries of sequence numbers [message->seq - HAS_RECEIVED_SIZE + 1, message->seq]
+                    size_t diff = message->seq - curr->lastReceived;
 
-                    if (diff >= REC_BUFF_SIZE) {
+                    if (diff >= HAS_RECEIVED_SIZE) {
                         // None of the old hasReceived members will be in the shifted arary
-                        // Clear the old hasReceived array and just set the first entry
-                        curr->hasReceived[0] = true; 
+                        // Clear the old hasReceived array
 
-                        for (size_t i = 1; i < REC_BUFF_SIZE; i++){
-                            curr->hasReceived[i] = false;
-                        }
+                        memset(curr->hasReceived, 0, sizeof(curr->hasReceived));
                     } else {
                         // Some of the old hasReceived members will be in the shifted array
                         // Shift hasReceived array by diff positions
-                        for (size_t i = REC_BUF_SIZE - 1; i >= diff; i--) {
+                        for (size_t i = HAS_RECEIVED_SIZE - 1; i >= (int)diff; --i) {
                             curr->hasReceived[i] = curr->hasReceived[i - diff];
                         }
                         // Clear all values newer than the shifted ones
-                        for (size_t i = 1; i < diff; i++) {
+                        for (size_t i = 0; i < diff; ++i) {
                             curr->hasReceived[i] = false;
                         }
-                        // Set the first entry of the array (message that we just received)
-                        curr->hasReceived[i] = true;
                     }
 
+                    // Set the first entry of the array (message that we just received)
+                    curr->hasReceived[0] = true;
                     // Update lastReceived with the new, higher sequence number
-                    curr->lastReceived = receivedMessage.seq;
+                    curr->lastReceived = message->seq;
 
                     // Move node to the front of the LRU macList (most recent received message)
                     move_mac_to_front(curr);
 
                     // Process and propagate the message
-                    process_message_prop();
-                } else if (curr->lastReceived - receivedMessage.seq < REC_BUF_SIZE) {
+                    process_message_prop(message);
+                } else if (curr->lastReceived - message->seq < HAS_RECEIVED_SIZE) {
                     // The sequence number falls within the bounds of hasReceived
                     // We must check the array to see if it has been received already
-                    size_t pos = curr->lastReceived - receivedMessage.seq;
+                    size_t pos = curr->lastReceived - message->seq;
 
                     if (!curr->hasReceived[pos]) {
                         // Message has not been received yet
@@ -624,31 +655,31 @@ void handle_message_prop() {
                         move_mac_to_front(curr);
 
                         // Process and propagate the message
-                        process_message_prop();
+                        process_message_prop(message);
                     }
                 }
                 // In all other cases, we very likely have already received the message, as it is lower than the current sequence number and
                 // outside the range of hasReceived (and the sequence number has very likely not reset)
-            } else {
-                // randKey does not match. The sender has likely rebooted or overflown since last received message, so we need to reset tracking
+            } else if (message->randKey != curr->lastRandKey) {
+                // randKey does not match and this is not a stale message from the old randKey. The sender has likely rebooted or overflown 
+                // since last received message, so we need to reset tracking
                 // This counts as a new, yet-to-be received message
                 // Udpate randKey
-                curr->randKey = receivedMessage.randKey;
+                curr->lastRandKey = curr->randKey;
+                curr->randKey = message->randKey;
 
                 // Move node to the front of the LRU macList (most recent received message)
                 move_mac_to_front(curr);
 
                 // Update lastReceived and reset hasReceived
-                curr->hasReceived[0] = true; 
-                
-                for (size_t i = 1; i < REC_BUFF_SIZE; i++){
-                    curr->hasReceived[i] = false;
-                }
+                memset(curr->hasReceived, 0, sizeof(curr->hasReceived));
 
-                curr->lastReceived = receivedMessage.seq;
+                curr->hasReceived[0] = true; 
+
+                curr->lastReceived = message->seq;
 
                 // Process and propagate the message
-                process_message_prop();
+                process_message_prop(message);
             }
 
             // Found MAC address, checked if we had received it before, and processed/propagagated if necessary. Good to return
@@ -662,24 +693,41 @@ void handle_message_prop() {
     // We have never received a message for this MAC address before. We must either create a new node for it or replace the least-recently-used node if macList is full
     if (macList.size >= macList.capacity) {
         // macList is full, so we must replace the least-recently-used node with this node, and move it to the front
-        node = macList->tail;
+        mac_node_t *node = macList.tail;
 
         if (!node) {
             // ERROR: macList is at capacity, but empty
             return;
         }
 
-        update_mac_node(node);
+        update_mac_node(message, node);
 
         // Process and propagate the message
-        process_message_prop();
+        process_message_prop(message);
     } else {
         // macList is not full, so we must create a new MAC node for this new address and add it to the front of th elist
-        create_mac_node();
+        if (!create_mac_node(message)) {
+            return;
+        }
 
         // Process and propagate the message
-        process_message_prop();
+        process_message_prop(message);
     }
+}
+
+// Helper to process a received message from receivedQueue (message at head) and remove it from the queue
+// Returns if a message was actually processed or not (if receivedQueue has elements or not)
+bool process_received_buffer_msg() {
+    // Try to received message from queue
+    msg_t message;
+
+    if (xQueueReceive(receivedQueue, &message, 0) == pdTRUE) {
+        handle_message_prop(&message);
+        return true;
+    }
+
+    // There were no messages in the queue
+    return false;
 }
 
 // -------------------------
@@ -688,18 +736,26 @@ void handle_message_prop() {
 
 // High-priority callback provided by ESP-NOW, *not an interrupt*
 // ESP-NOW driver buffers new, incoming messages automatically, up to a finite amount
-void OnDataRecv(const esp_now_rec_info *recv_info, const uint_8 *incomingData, int len){
+void OnDataRecv(const esp_now_recv_info *recv_info, const uint8_t *incomingData, int len){
+    // TODO: Must check the len of the incoming message
+    
     // Store the received message in a structure of type msg_t
-    memcpy(&receivedMessage, incomingData, sizeof(receivedMessage));
+    msg_t message;
+    memcpy(&message, incomingData, sizeof(message));
 
     // Reject messages that are incorrect version
-    if (receivedMessage.ver != VERSION) {
+    if (message.ver != VERSION) {
         return;
     }
 
-    // Check if message need to be propagated
-    if (receivedMessage.type == BUTTON || receivedMessage.type == DELIVERY_REPORT) {
-        handle_message_prop();
+    // Reject messages that this node sent
+    if (mac_equal(message.origin, my_mac)) {
+        return;
+    }
+
+    // Check if message need to be propagated (added to the queue)
+    if (message.type == BUTTON || message.type == DELIVERY_REPORT) {
+        xQueueSend(receivedQueue, &message, 0);
     }
 }
 
