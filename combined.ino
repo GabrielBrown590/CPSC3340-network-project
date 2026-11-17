@@ -1,6 +1,13 @@
 #include <esp_now.h>
 #include <WiFi.h> 
 #include "esp_mac.h"
+#include <queue>
+
+#define TTLHOPS 5
+#define CHANNEL 1
+#define TIMETILLOUTOFNET 3 * 1000
+const uint8_t allRecieverMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+esp_now_peer_info_t broadcastPeer;
 
 typedef struct __attribute__((packed)) {
   uint8_t  ver;       // protocol version; reject mismatches
@@ -13,19 +20,42 @@ typedef struct __attribute__((packed)) {
   uint8_t  r, g, b;   // origin's color
 } msg_t;
 
+msg_t recievedMessage;
+
 
 void heartbeat()
 {
   msg_t heartBeat = {};
   heartBeat.type = 0;
   WiFi.macAddress(heartBeat.origin);
-  heartBeat.ttl = TTLHOPS;
+  heartBeat.ttl = 0;
 
   esp_now_send(allRecieverMac, (uint8_t *) &heartBeat, sizeof(heartBeat));
   timeSentLastHeartBeat = millis();
 
 }
 
+void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len)
+{
+  if (len != sizeof(msg_t)) return; //throw out garbage packets
+  if(info->rx_ctrl->rssi < -75) return;
+
+  memcpy(&recievedMessage, incomingData, sizeof(recievedMessage));
+  queue.push(recievedMessage);
+}
+
+void popQueue()
+{
+  msg_t q_msg;
+  q_msg = queue.pop()
+  if(q_msg.type == 0)
+  {
+    inNetwork = true;
+    timeRecievedLastHeartBeat = millis();
+  } else if (q_msg.type == 1) {
+    // TODO: Add button recieving code
+  }
+}
 
 void declareBroadcastPeer()
 {
@@ -251,6 +281,9 @@ void setup() {
       return;
     }
   esp_now_register_recv_cb(OnDataRecv); //tell esp which function to run on packet recieve.
+
+  std::queue<msg_t> queue;
+
   timeRecievedLastHeartBeat = millis();
   timeSentLastHeartBeat = millis();
   
