@@ -199,7 +199,7 @@ QueueHandle_t receivedQueue = NULL;
 // Helper Functions
 // -------------------------
 
-// PLACEHOLDER: Button message handler
+// Button message handler
 void handle_button_message(msg_t *message) {
     currState = MESSAGE;
     messageRed = message.r;
@@ -208,9 +208,9 @@ void handle_button_message(msg_t *message) {
     timeToReset = millis() + 3000;
 }
 
-// PLACEHOLDER: Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
+// Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
 void broadcast_message(msg_t *message) {
-    return;
+    esp_now_send(allRecieverMac, (uint8_t *) message, sizeof(message));
 }
 
 // PLACEHOLDER: Helper to schedule a message for broadcast at a millis() timestamp (message argument will be deallocated shortly after return)
@@ -218,7 +218,7 @@ void schedule_broadcast_message(msg_t *message, unsigned long send_time) {
     return;
 }
 
-// PLACEHOLDER: Gives a random key between 1 and UINT32_MAX
+// Gives a random key between 1 and UINT32_MAX
 uint32_t get_rand_key() {
     uint32_t upper = random(0, UINT16_MAX + 1);
     uint32_t lower = random(1, UINT16_MAX + 1);
@@ -545,6 +545,9 @@ void send_delivery_report(msg_t *message) {
     delivery_report.originalSeq = message->seq;
     delivery_report.ttl = TTL_START;
 
+    /*
+    Holdover from scheduling redundancy:
+
     // Schedule attempts of the delivery report broadcast
     unsigned long base_time = millis();
 
@@ -553,6 +556,10 @@ void send_delivery_report(msg_t *message) {
         schedule_broadcast_message(&delivery_report, send_time);
         base_time += DELIVERY_REPORT_JITTER_HIGH_MS;
     }
+    */
+
+    // Send delivery report immediately
+    broadcast_message(&delivery_report);
 }
 
 // Helper function to construct the propagated message (decrement TTL) and broadcast it
@@ -564,6 +571,9 @@ void exec_message_prop(msg_t *message) {
 
     // Decrement TTL
     propagated_message.ttl--;
+
+    /*
+    Holdover from scheduling redundancy:
 
     // Schedule attempts of the propagation broadcast
     unsigned long base_time = millis();
@@ -581,6 +591,10 @@ void exec_message_prop(msg_t *message) {
         schedule_broadcast_message(&propagated_message, send_time);
         base_time += jitter_high;
     }
+    */
+
+     // Send propagated message immediately
+    broadcast_message(&propagated_message);
 }
 
 // Helper to be called by handle_message_prop() when message is BUTTON or DELIVERY_REPORT type and has yet to be received
@@ -762,7 +776,6 @@ void heartbeat()
   heartBeat.ttl = 0;
 
   esp_now_send(allRecieverMac, (uint8_t *) &heartBeat, sizeof(heartBeat));
-  timeSe
 }
 
 void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len)
@@ -806,11 +819,9 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  originRed = (int)mac[3];
-  originGreen = (int)mac[4];
-  originBlue = (int)mac[5];
+  originRed = (int)my_mac[3];
+  originGreen = (int)my_mac[4];
+  originBlue = (int)my_mac[5];
   Serial.println(originRed);
   Serial.println(originGreen);
   Serial.println(originBlue);
@@ -822,27 +833,6 @@ void setColor(int r, int g, int b) {
   analogWrite(bluePin, b);
 }
 
-void send_button_message(){
-    //Initialize struct where all NULL fields equal 0
-    msg_t msg {};
-    msg.ver = VERSION;
-    msg.type = BUTTON;
-    //arrays can't be assigned
-    memcpy(msg.origin, my_mac, 6);
-    msg.seq = get_next_seq();
-    msg.randKey = my_rand_key;
-    msg.ttl = TTL_START;
-    msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
-
-    // Send button message
-    unsigned long base_time = millis();
-    for (int i = 0; i < PROPAGATION_SEND_NUM; i++){
-        unsigned long send_time = base_time + random(BUTTON_JITTER_LOW_MS, BUTTON_JITTER_HIGH_MS + 1);
-        schedule_broadcast_message(&msg, send_time);
-        base_time += BUTTON_JITTER_HIGH_MS
-    }
-
-}
 
 void setup() {
   // put your setup code here, to run once:
@@ -856,14 +846,13 @@ void setup() {
   }
 
   WiFi.mode(WIFI_MODE_STA);
+  esp_read_mac(my_mac, ESP_MAC_WIFI_STA);
   if (esp_now_init() != ESP_OK) 
     {
       Serial.println("Error initializing ESP-NOW");
       return;
     }
   esp_now_register_recv_cb(OnDataRecv); //tell esp which function to run on packet recieve.
-
-  std::queue<msg_t> queue;
 
   timeRecievedLastHeartBeat = millis();
   timeSentLastHeartBeat = millis();
@@ -883,8 +872,6 @@ void setup() {
 }
 
 void loop() {
-  Serial.println(buttonState);
-  
   process_received_buffer_msg();
 
   // send heartbeat 

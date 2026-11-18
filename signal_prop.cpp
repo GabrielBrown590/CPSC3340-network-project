@@ -411,6 +411,7 @@ void update_send_log(msg_t *message) {
 
         curr = curr->next;
     }
+<<<<<<< HEAD
 
     // The send message log was not found, create a new one and add it to the list
     send_log_t *new_send_log = static_cast<send_log_t *>(malloc(sizeof(send_log_t)));
@@ -445,6 +446,8 @@ void update_send_log(msg_t *message) {
 
     // Add the send log to the sendLogs list
     add_send_log(new_send_log);
+=======
+>>>>>>> main
 }
 
 // Helper to add a new message reception log to the recLogs list and pop the last value of the queue if it is over capacity
@@ -466,6 +469,7 @@ void add_rec_log(msg_t *message) {
     // Instantiate hop count
     new_rec_log->hopCount = TTL_START - message->ttl + 1;
 
+<<<<<<< HEAD
     // Add node to the front of the queue
     if (recLogs.head) {
         recLogs.head->prev = new_rec_log;
@@ -757,5 +761,9 @@ void OnDataRecv(const esp_now_recv_info *recv_info, const uint8_t *incomingData,
     if (message.type == BUTTON || message.type == DELIVERY_REPORT) {
         xQueueSend(receivedQueue, &message, 0);
     }
+=======
+void OnDataRecv(const esp_now_rec_info *recv_info, const uint_8 *incomingData, int len){
+    memcpy(&curr_message, incomingData, sizeof(curr_message));
+>>>>>>> main
 }
 
