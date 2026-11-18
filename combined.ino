@@ -819,9 +819,9 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  originRed = (int)mac[3];
-  originGreen = (int)mac[4];
-  originBlue = (int)mac[5];
+  originRed = (int)my_mac[3];
+  originGreen = (int)my_mac[4];
+  originBlue = (int)my_mac[5];
   Serial.println(originRed);
   Serial.println(originGreen);
   Serial.println(originBlue);
@@ -832,7 +832,6 @@ void setColor(int r, int g, int b) {
   analogWrite(greenPin, g);
   analogWrite(bluePin, b);
 }
-
 
 
 void setup() {
@@ -868,17 +867,12 @@ void setup() {
   pinMode(bluePin, OUTPUT);
 
   pinMode(buttonPin, INPUT_PULLUP); 
+  attachInterrupt(digitalPinToInterrupt(buttonPin), send_button_press, FALLING);
+
 }
 
 void loop() {
-  int buttonState = digitalRead(buttonPin);
-  Serial.println(buttonState);
-  
   process_received_buffer_msg();
-  if (buttonState == LOW) {
-    // send message here
-
-  }
 
   // send heartbeat 
   if(millis()-timeRecievedLastHeartBeat > TIMETILLOUTOFNET)
