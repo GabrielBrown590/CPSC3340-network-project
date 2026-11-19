@@ -30,8 +30,8 @@ int messageGreen = 0;
 int messageBlue = 0;
 
 const int redPin = 21;
-const int greenPin = 47;
-const int bluePin = 48;
+const int greenPin = 48;
+const int bluePin = 47;
 
 const int buttonPin = 2;
 
@@ -800,9 +800,11 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
     // Check if message need to be propagated (added to the queue)
     if (message.type == BUTTON || message.type == DELIVERY_REPORT) {
         xQueueSend(receivedQueue, &message, 0);
-    } else if (message.type == HEARTBEAT && currState != MESSAGE) {
+    } else if (message.type == HEARTBEAT) {
         timeRecievedLastHeartBeat = millis();
-        currState = INRANGE;
+        if (currState != MESSAGE) {
+            currState = INRANGE;
+        }  
     }
 }
 
@@ -908,7 +910,7 @@ void loop() {
     currState = OUTOFRANGE;
   }
   //check if we need to send heartbeat
-  if(millis()-timeSentLastHeartBeat > 1000)
+  if(millis()-timeSentLastHeartBeat > 500)
   {
     heartbeat();
     timeSentLastHeartBeat = millis();
