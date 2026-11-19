@@ -1,0 +1,72 @@
+# Mesh Network Log -- Gabriel, Coby, Ani
+
+- Starting with the heartbeat functionality. We're going to use the millis() function to time our heartbeat outputsStarting with the heartbeat functionality. We're going to use the millis() function to time our heartbeat outputs
+- The initial goal is to initialize the esp-now functionality then send a message to all of our esp32s. We will do this by getting an array of all MAC addresses and attempting to send to each of them
+- For the receiving component, we are checking to see if a received signal is a heartbeat. If so we are starting a timer for that MAC address and saving it to the neighbor table
+- The timer is set back to 0 each time a new signal is received for a given MAC address
+- Then if a timer ever reaches 3.5 seconds we remove that neighbor 
+- We realized that we need to broadcast to all devices and not just the esp's we are currently working with to meet the dynamic membership requirement. So we will instead broadcast to FF:FF:FF:FF:FF:FF
+- ### Neighbor Cleanup
+	- To keep our neighbor list accurate we will remove any neighbors we haven't heard from in 3.5 seconds
+	- To do this we will set a variable which tracks the time using millis() we last heard from a given neighbor
+	- Then at each loop we check each neighbor and if millis() - last_heard > 3500 then we will remove that neighbor
+	- CHANGED: No longer required to track individual neighbors
+		- So we are moving to a global timer for receiving heartbeats. As long as we receive a heartbeat (regardless of who it's from) every 3.5 seconds we remain in our network
+		- So at each receive we update lastReceive to millis() and inNetwork to 1
+- ### Broadcasting Heartbeat
+	- We will first register a peer with FF:FF:FF:FF:FF:FF as the mac address, WIFI_IF_STA as the interface since Wifi is set to stationary. The channel is set to channel, and everything else 0
+	- We can then send a heartbeat to the broadcast peer after a timer hits 1000 ms
+		- This is done by tracking the last heartbeat send time
+		- Then in each loop check millis - lastSent > 1000
+			- If so send
+- ### RSSI
+	- When receiving a signal we check if the RRSI is above our threshold. If it is we use that signal, otherwise we ignore it
+	- This is implemented to deal with the flickering of connection. When objects sit at the end of the connection range they will likely go in and out of range, so it's best to just not accept them at that point. 
+## Coalescing
+- ### RTOS
+	- Given that we have a loop running and then a function that runs given an event we need to make sure we handle the queue properly. So we will be using RTOS to make sure that the separate threads / processes aren't causing conflict in the queue
+- ### Data Structures
+	- The other groups wanted to use a queue for the receiving of messages, so we had to implement that
+	- onDataRecv was changed to check for RSSI and message length, and if a message was valid it got sent to the queue 
+	- Then once per loop we do a queue pop to handle the received messages.
+	- We will also implement a sending queue to make sure messages can have jitter 
+	- To avoid threading issues we are using a RTOS queue 
+	- UPDATE: Heartbeats will be processed outside of the queue. Essentially when a message comes in, we check if its viable. If so then we process a heartbeat or push it to queue otherwise
+	- wow coalescing takes a while (we did not do a good job of setting up a modular system so we have to do all of this by hand)
+- ### General Implementation Notes
+	- We will be using a button interrupt so that button input can be handled as soon as it happens. In this function we pretty much just push it to the queue
+	- - The initial goal is to initialize the esp-now functionality then send a message to all of our esp32s. We will do this by getting an array of all MAC addresses and attempting to send to each of them
+- For the receiving component, we are checking to see if a received signal is a heartbeat. If so we are starting a timer for that MAC address and saving it to the neighbor table
+- The timer is set back to 0 each time a new signal is received for a given MAC address
+- Then if a timer ever reaches 3.5 seconds we remove that neighbor 
+- We realized that we need to broadcast to all devices and not just the esp's we are currently working with to meet the dynamic membership requirement. So we will instead broadcast to FF:FF:FF:FF:FF:FF
+- ### Neighbor Cleanup
+	- To keep our neighbor list accurate we will remove any neighbors we haven't heard from in 3.5 seconds
+	- To do this we will set a variable which tracks the time using millis() we last heard from a given neighbor
+	- Then at each loop we check each neighbor and if millis() - last_heard > 3500 then we will remove that neighbor
+	- CHANGED: No longer required to track individual neighbors
+		- So we are moving to a global timer for receiving heartbeats. As long as we receive a heartbeat (regardless of who it's from) every 3.5 seconds we remain in our network
+		- So at each receive we update lastReceive to millis() and inNetwork to 1
+- ### Broadcasting Heartbeat
+	- We will first register a peer with FF:FF:FF:FF:FF:FF as the mac address, WIFI_IF_STA as the interface since Wifi is set to stationary. The channel is set to channel, and everything else 0
+	- We can then send a heartbeat to the broadcast peer after a timer hits 1000 ms
+		- This is done by tracking the last heartbeat send time
+		- Then in each loop check millis - lastSent > 1000
+			- If so send
+- ### RSSI
+	- When receiving a signal we check if the RRSI is above our threshold. If it is we use that signal, otherwise we ignore it
+	- This is implemented to deal with the flickering of connection. When objects sit at the end of the connection range they will likely go in and out of range, so it's best to just not accept them at that point. 
+## Coalescing
+- ### RTOS
+	- Given that we have a loop running and then a function that runs given an event we need to make sure we handle the queue properly. So we will be using RTOS to make sure that the separate threads / processes aren't causing conflict in the queue
+- ### Data Structures
+	- The other groups wanted to use a queue for the receiving of messages, so we had to implement that
+	- onDataRecv was changed to check for RSSI and message length, and if a message was valid it got sent to the queue 
+	- Then once per loop we do a queue pop to handle the received messages.
+	- We will also implement a sending queue to make sure messages can have jitter 
+	- To avoid threading issues we are using a RTOS queue 
+	- UPDATE: Heartbeats will be processed outside of the queue. Essentially when a message comes in, we check if its viable. If so then we process a heartbeat or push it to queue otherwise
+	- wow coalescing takes a while (we did not do a good job of setting up a modular system so we have to do all of this by hand)
+- ### General Implementation Notes
+	- We will be using a button interrupt so that button input can be handled as soon as it happens. In this function we pretty much just push it to the queue
+	- 
