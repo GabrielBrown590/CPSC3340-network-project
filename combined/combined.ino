@@ -837,9 +837,9 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  originRed = (int)(my_mac[3] * 19) % 255;
-  originGreen = (int)(my_mac[4] * 19) % 255;
-  originBlue = (int)(my_mac[5] * 19) % 255;
+  originRed = (int)(my_mac[3] * 41) % 256;
+  originGreen = (int)(my_mac[4] * 41) % 256;
+  originBlue = (int)(my_mac[5] * 41) % 256;
   Serial.println(originRed);
   Serial.println(originGreen);
   Serial.println(originBlue);
