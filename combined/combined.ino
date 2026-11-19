@@ -863,6 +863,10 @@ void send_button_press(){
     msg.ttl = TTL_START;
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
     currState = MESSAGE;
+    messageRed = originRed;
+    messageGreen = originGreen;
+    messageBlue = originBlue;
+    timeToReset = millis() + 3000;
 
     // Send button message
     /*
