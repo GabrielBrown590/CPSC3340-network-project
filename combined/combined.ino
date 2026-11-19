@@ -29,11 +29,11 @@ int messageRed = 0;
 int messageGreen = 0;
 int messageBlue = 0;
 
-const int redPin = 16;
-const int greenPin = 17;
-const int bluePin = 18;
+const int redPin = 21;
+const int greenPin = 47;
+const int bluePin = 48;
 
-const int buttonPin = 15;
+const int buttonPin = 2;
 
 enum LED_STATE {INRANGE, OUTOFRANGE, MESSAGE};
 
@@ -833,6 +833,8 @@ void setColor(int r, int g, int b) {
 }
 
 void send_button_press(){
+    Serial.println("Sending button press");
+
     //Initialize struct where all NULL fields equal 0
     msg_t msg {};
     msg.ver = VERSION;
@@ -861,6 +863,8 @@ void send_button_press(){
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+
+  Serial.println("Starting program");
 
   receivedQueue = xQueueCreate(RECEIVED_MSG_QUEUE_SIZE, sizeof(msg_t));
 
@@ -894,14 +898,7 @@ void setup() {
 }
 
 void loop() {
-  int buttonState = digitalRead(buttonPin);
-  Serial.println(buttonState);
-  
   process_received_buffer_msg();
-  if (buttonState == LOW) {
-    // send message here
-
-  }
 
   // send heartbeat 
   if(millis()-timeRecievedLastHeartBeat > TIMETILLOUTOFNET && currState != MESSAGE)
@@ -924,6 +921,8 @@ void loop() {
     
   } else if (currState == MESSAGE) {
     // determine color of incoming message rgb (blue for now)
+    // If a second button is received, the LED instantly changes to this new button color
+    // Button receptions are not stored in a queue/guarantees to display for timeToReset mS
     setColor(messageRed, messageGreen, messageBlue);
     if (millis() >= timeToReset) {
         currState = INRANGE;
