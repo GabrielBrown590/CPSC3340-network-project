@@ -18,6 +18,7 @@ esp_now_peer_info_t broadcastPeer;
 uint timeToReset = 0;
 volatile uint timeRecievedLastHeartBeat;
 uint timeSentLastHeartBeat;
+uint timeLastLogged;
 
 // the rgb values of this pod as an originator
 int originRed = 0;
@@ -94,6 +95,7 @@ typedef struct __attribute__((packed)) {
     uint16_t originalSeq;         // (Delivery report field) seq of the pod that originally sent the message
     uint8_t ttl;                  // Remaining hops until retransmission stops
     uint8_t r, g, b;              // Origin's color
+    int8_t rssi;
 } msg_t;
 
 // Structure for a (doubly) linked list node, tracking a MAC-identified message source
@@ -128,6 +130,8 @@ typedef struct rec_node {
 
     struct rec_node *next;
     struct rec_node *prev;
+
+    int8_t rssi;
 } rec_log_t;
 
 // Structure for a sent message recipient as a linked list node
@@ -339,6 +343,18 @@ bool create_mac_node(msg_t *message){
     return true;
 }
 
+void print_mac(const uint8_t mac[6]) {
+    Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X:", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+void print_rec_log() {
+    Serial.println("Printing log:");
+    for (rect_log_t *n = recLogs.head; n != NULL; n = n->next) {
+        Serial.println("From mac: ");
+        print_mac(n->origin);
+        Serial.println("key = %08lx seq=%u hops=%u rssi=%", (unsigned long) n->randKey, (unsigned)n->seq, (unsigned) n->hopCount, n->rssi);
+    }
+}
+
 // Helper to add a new send log to the sendLogs list and pop the last value of the queue if it is over capacity
 void add_send_log(send_log_t *send_log) {
     // Add node to the front of the queue
@@ -496,6 +512,7 @@ void add_rec_log(msg_t *message) {
     }
     new_rec_log->next = recLogs.head;
     new_rec_log->prev = NULL;
+    new_rec_log->rssi = message->rssi;
     recLogs.head = new_rec_log;
 
     // Set tail if necessary
@@ -786,6 +803,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 
     msg_t message;
     memcpy(&message, incomingData, sizeof(message));
+    message.rssi = rx_ctrl->rssi;
 
     // Reject messages that are incorrect version
     if (message.ver != VERSION) {
@@ -821,9 +839,9 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  originRed = (int)my_mac[3];
-  originGreen = (int)my_mac[4];
-  originBlue = (int)my_mac[5];
+  originRed = (int)(my_mac[3] * 41) % 256;
+  originGreen = (int)(my_mac[4] * 41) % 256;
+  originBlue = (int)(my_mac[5] * 41) % 256;
   Serial.println(originRed);
   Serial.println(originGreen);
   Serial.println(originBlue);
@@ -848,6 +866,7 @@ void send_button_press(){
     msg.randKey = my_rand_key;
     msg.ttl = TTL_START;
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
+    currState = MESSAGE;
 
     // Send button message
     /*
@@ -916,6 +935,10 @@ void loop() {
     timeSentLastHeartBeat = millis();
   }
 
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == 'p') print_rec_log();
+  }
 
   if (currState == INRANGE) {
     setColor(0, 255, 0);
