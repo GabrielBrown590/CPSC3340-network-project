@@ -877,9 +877,10 @@ void send_button_press(){
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
 
     currState = MESSAGE;
-    messageRed = msg.r;
-    messageBlue = msg.b;
-    messageGreen = msg.g;
+    messageRed = originRed;
+    messageGreen = originGreen;
+    messageBlue = originBlue;
+    timeToReset = millis() + 3000;
 
     // Send button message
     /*
