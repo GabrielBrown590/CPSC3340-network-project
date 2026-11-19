@@ -833,6 +833,27 @@ void setColor(int r, int g, int b) {
   analogWrite(bluePin, b);
 }
 
+void send_button_press(){
+    //Initialize struct where all NULL fields equal 0
+    msg_t msg {};
+    msg.ver = VERSION;
+    msg.type = BUTTON;
+    //arrays can't be assigned
+    memcpy(msg.origin, my_mac, 6);
+    msg.seq = get_next_seq();
+    msg.randKey = my_rand_key;
+    msg.ttl = TTL_START;
+    msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
+
+    // Send button message
+    unsigned long base_time = millis();
+    for (int i = 0; i < PROPAGATION_SEND_NUM; i++){
+        unsigned long send_time = base_time + random(BUTTON_JITTER_LOW_MS, BUTTON_JITTER_HIGH_MS + 1);
+        schedule_broadcast_message(&msg, send_time);
+        base_time += BUTTON_JITTER_HIGH_MS
+    }
+
+}
 
 
 void setup() {
@@ -868,6 +889,7 @@ void setup() {
   pinMode(bluePin, OUTPUT);
 
   pinMode(buttonPin, INPUT_PULLUP); 
+  attachInterrupt(digitalPinToInterrupt(buttonPin), send_button_press, FALLING);
 }
 
 void loop() {
