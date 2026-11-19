@@ -18,6 +18,7 @@ esp_now_peer_info_t broadcastPeer;
 uint timeToReset = 0;
 volatile uint timeRecievedLastHeartBeat;
 uint timeSentLastHeartBeat;
+uint timeLastLogged;
 
 // the rgb values of this pod as an originator
 int originRed = 0;
@@ -337,6 +338,18 @@ bool create_mac_node(msg_t *message){
     macList.size++;
 
     return true;
+}
+
+void print_mac(const uint8_t mac[6]) {
+    Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X:", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+void print_rec_log() {
+    Serial.println("Printing log:");
+    for (rect_log_t *n = recLogs.head; n != NULL; n = n->next) {
+        Serial.println("From mac: ");
+        print_mac(n->origin);
+        Serial.println("key = %08lx seq=%u hops=%u", (unsigned long) n->randKey, (unsigned)n->seq, (unsigned) n->hopCount);
+    }
 }
 
 // Helper to add a new send log to the sendLogs list and pop the last value of the queue if it is over capacity
@@ -844,6 +857,7 @@ void send_button_press(){
     msg.randKey = my_rand_key;
     msg.ttl = TTL_START;
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
+    currState = MESSAGE;
 
     // Send button message
     /*
@@ -912,6 +926,10 @@ void loop() {
     timeSentLastHeartBeat = millis();
   }
 
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == 'p') print_rec_log();
+  }
 
   if (currState == INRANGE) {
     setColor(0, 255, 0);
