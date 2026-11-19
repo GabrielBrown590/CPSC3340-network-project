@@ -13,6 +13,9 @@
 #define TTLHOPS 5
 #define CHANNEL 1
 #define TIMETILLOUTOFNET 3 * 1000
+
+#define DEBOUNCE_MS 50
+
 const uint8_t allRecieverMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 esp_now_peer_info_t broadcastPeer;
 uint timeToReset = 0;
@@ -39,6 +42,10 @@ const int buttonPin = 2;
 enum LED_STATE {INRANGE, OUTOFRANGE, MESSAGE};
 
 volatile LED_STATE currState = INRANGE;
+
+unsigned long lastButtonPress = 0;
+
+
 
 /*
 Notes:
@@ -347,11 +354,11 @@ void print_mac(const uint8_t mac[6]) {
     Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X:", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 void print_rec_log() {
-    Serial.println("Printing log:");
-    for (rect_log_t *n = recLogs.head; n != NULL; n = n->next) {
+    Serial.println("Printing log (most to least recent):");
+    for (rec_log_t *n = recLogs.head; n != NULL; n = n->next) {
         Serial.println("From mac: ");
         print_mac(n->origin);
-        Serial.println("key = %08lx seq=%u hops=%u rssi=%", (unsigned long) n->randKey, (unsigned)n->seq, (unsigned) n->hopCount, n->rssi);
+        Serial.printf("key = %08lx seq=%u hops=%u rssi=%d\n", (unsigned long) n->randKey, (unsigned)n->seq, (unsigned) n->hopCount, n->rssi);
     }
 }
 
@@ -803,7 +810,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
 
     msg_t message;
     memcpy(&message, incomingData, sizeof(message));
-    message.rssi = rx_ctrl->rssi;
+    message.rssi = info->rx_ctrl->rssi;
 
     // Reject messages that are incorrect version
     if (message.ver != VERSION) {
@@ -854,7 +861,9 @@ void setColor(int r, int g, int b) {
 }
 
 void send_button_press(){
-    Serial.println("Sending button press");
+    if (millis() - lastButtonPress < DEBOUNCE_MS) {
+        return;
+    }
 
     //Initialize struct where all NULL fields equal 0
     msg_t msg {};
@@ -866,7 +875,11 @@ void send_button_press(){
     msg.randKey = my_rand_key;
     msg.ttl = TTL_START;
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
+
     currState = MESSAGE;
+    messageRed = msg.r;
+    messageBlue = msg.b;
+    messageGreen = msg.g;
 
     // Send button message
     /*
@@ -879,6 +892,8 @@ void send_button_press(){
     */
 
     broadcast_message(&msg);
+
+    lastButtonPress = millis();
 }
 
 
