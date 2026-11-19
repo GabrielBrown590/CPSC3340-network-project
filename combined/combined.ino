@@ -800,7 +800,7 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
     // Check if message need to be propagated (added to the queue)
     if (message.type == BUTTON || message.type == DELIVERY_REPORT) {
         xQueueSend(receivedQueue, &message, 0);
-    } else if (message.type == HEARTBEAT) {
+    } else if (message.type == HEARTBEAT && currState != MESSAGE) {
         timeRecievedLastHeartBeat = millis();
         currState = INRANGE;
     }
