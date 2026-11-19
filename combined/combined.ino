@@ -202,9 +202,9 @@ QueueHandle_t receivedQueue = NULL;
 // Button message handler
 void handle_button_message(msg_t *message) {
     currState = MESSAGE;
-    messageRed = message.r;
-    messageGreen = message.g;
-    messageBlue = message.b;
+    messageRed = message->r;
+    messageGreen = message->g;
+    messageBlue = message->b;
     timeToReset = millis() + 3000;
 }
 
@@ -800,7 +800,6 @@ void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, in
     if (message.type == BUTTON || message.type == DELIVERY_REPORT) {
         xQueueSend(receivedQueue, &message, 0);
     } else if (message.type == HEARTBEAT) {
-        inNetwork = true;
         timeRecievedLastHeartBeat = millis();
         currState = INRANGE;
     }
@@ -819,9 +818,9 @@ void declareBroadcastPeer()
 }
 
 void rgbFromMAC() {
-  originRed = (int)mac[3];
-  originGreen = (int)mac[4];
-  originBlue = (int)mac[5];
+  originRed = (int)my_mac[3];
+  originGreen = (int)my_mac[4];
+  originBlue = (int)my_mac[5];
   Serial.println(originRed);
   Serial.println(originGreen);
   Serial.println(originBlue);
@@ -846,13 +845,16 @@ void send_button_press(){
     msg.r = originRed; msg.b = originBlue; msg.g = originGreen;
 
     // Send button message
-    unsigned long base_time = millis();
+    /*
+     unsigned long base_time = millis();
     for (int i = 0; i < PROPAGATION_SEND_NUM; i++){
         unsigned long send_time = base_time + random(BUTTON_JITTER_LOW_MS, BUTTON_JITTER_HIGH_MS + 1);
         schedule_broadcast_message(&msg, send_time);
-        base_time += BUTTON_JITTER_HIGH_MS
+        base_time += BUTTON_JITTER_HIGH_MS;
     }
+    */
 
+    broadcast_message(&msg);
 }
 
 
@@ -880,7 +882,6 @@ void setup() {
   timeSentLastHeartBeat = millis();
   
   declareBroadcastPeer();
-  inNetwork = false;
 
   rgbFromMAC();
 
@@ -903,9 +904,9 @@ void loop() {
   }
 
   // send heartbeat 
-  if(millis()-timeRecievedLastHeartBeat > TIMETILLOUTOFNET)
+  if(millis()-timeRecievedLastHeartBeat > TIMETILLOUTOFNET && currState != MESSAGE)
   {
-    inNetwork = false;
+    currState = OUTOFRANGE;
   }
   //check if we need to send heartbeat
   if(millis()-timeSentLastHeartBeat > 1000)
