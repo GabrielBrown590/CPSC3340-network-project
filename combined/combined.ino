@@ -16,7 +16,7 @@
 const uint8_t allRecieverMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 esp_now_peer_info_t broadcastPeer;
 uint timeToReset = 0;
-uint timeRecievedLastHeartBeat;
+volatile uint timeRecievedLastHeartBeat;
 uint timeSentLastHeartBeat;
 
 // the rgb values of this pod as an originator
@@ -37,7 +37,7 @@ const int buttonPin = 15;
 
 enum LED_STATE {INRANGE, OUTOFRANGE, MESSAGE};
 
-LED_STATE currState = INRANGE;
+volatile LED_STATE currState = INRANGE;
 
 /*
 Notes:
@@ -210,7 +210,7 @@ void handle_button_message(msg_t *message) {
 
 // Helper to broadcast a message immediately (message argument will be deallocated shortly after return)
 void broadcast_message(msg_t *message) {
-    esp_now_send(allRecieverMac, (uint8_t *) message, sizeof(message));
+    esp_now_send(allRecieverMac, (uint8_t *) message, sizeof(msg_t));
 }
 
 // PLACEHOLDER: Helper to schedule a message for broadcast at a millis() timestamp (message argument will be deallocated shortly after return)
@@ -774,6 +774,7 @@ void heartbeat()
   heartBeat.type = 0;
   WiFi.macAddress(heartBeat.origin);
   heartBeat.ttl = 0;
+  heartBeat.ver = 1;
 
   esp_now_send(allRecieverMac, (uint8_t *) &heartBeat, sizeof(heartBeat));
 }
@@ -870,6 +871,7 @@ void setup() {
   }
 
   WiFi.mode(WIFI_MODE_STA);
+  my_rand_key = get_rand_key();
   esp_read_mac(my_mac, ESP_MAC_WIFI_STA);
   if (esp_now_init() != ESP_OK) 
     {
@@ -894,14 +896,9 @@ void setup() {
 }
 
 void loop() {
-  int buttonState = digitalRead(buttonPin);
-  Serial.println(buttonState);
   
   process_received_buffer_msg();
-  if (buttonState == LOW) {
-    // send message here
 
-  }
 
   // send heartbeat 
   if(millis()-timeRecievedLastHeartBeat > TIMETILLOUTOFNET && currState != MESSAGE)
@@ -912,6 +909,7 @@ void loop() {
   if(millis()-timeSentLastHeartBeat > 1000)
   {
     heartbeat();
+    timeSentLastHeartBeat = millis();
   }
 
 
@@ -928,6 +926,5 @@ void loop() {
     if (millis() >= timeToReset) {
         currState = INRANGE;
     }
-    currState = INRANGE;
   }
 }
