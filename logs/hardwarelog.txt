@@ -1,0 +1,43 @@
+Hardware team log (Team D):
+Filippo, Emir, Abheek
+
+11/12:
+
+- We prototyped the initial version of each pod. 
+
+Our core assumption was the fact that we needed to make the system modular enough to be flashed at a later date once the `firmware` team was done.
+
+Today, we got the LED to emit light (an RBG variant), as well as testing the button press functionality (basic detection).
+
+11/17:
+
+- The main focus for today was to properly assemble a pod in order to have a distinctly reproducible unit for easy manufacturing every time.
+- We encountered issues with form factor and design: Crucially, we wanted to make sure to fulfill
+this project's portability requirements by making it such that each pod is easily able to be carried
+by one person with minimal risks for wires being displaced, for instance, or the pod's main function (wireless mesh network comms) being impaired
+
+Our strategy centered around getting one pod to work. To do so, we created a short script to test LED and button function while the firmware and radio teams continued
+to work on their portion of the project. Since we needed to be ready and modular enough for them to integrate quickly, we makde sure to
+parametrize our code in order to make it easy to integrate and flash when the proper pod code was ready.
+
+- We also tested a rudimentary "message send" flow with the button and LED (as well as a `connected` flow)
+
+11/19:
+
+Today was all about integration. I worked with Ryan and the firmware team to integrate the all-important `combined.ino` file with the hardware for the pods.
+
+- As mentioned previously, the previous session's goal was to make it quite trivial to discern what needed to change in the proper code
+to integrate the pins and hardware for the pods once the code was ready to be tested.
+- After about 30 minutes of parsing the code line by line to make sure we did not miss any point that nneeded to induce changes in the hardware (status light changes, register user input, etc.),
+we were happy with our changes and compiled
+- Inevitably, we encountered several issues at compilation (stemming from undeclared variables and integration issues). Filippo and Ryan worked for a few more minutes to resolve these, and ultimately, the code compiled
+
+An important component to our team was planning and executing the field test. We initially tested the mesh network pods indoors in the long corridor
+that is within the Becton/Greenberg teaching center:
+
+The signal strength, network stability, and range were quite stable and performant. Incredibly, it was noted by several people (including Dr. Petersen) that, counterintuitively,
+our network behaved more predictably and had better signal strength INDOORS instead of during our outside field test. After some research, this is a well-documented effect ...this is a well-documented effect that is due eto how 2.4 GHz signals behave in enclosed spaces versus open air ("waveguide" effect from the walls)
+
+That being said, we were quite pleased with out test, which occured over the entire length of Hillhouse Avenue. Filippo was the first in line and was able to propagate
+a message to Gabriel (who we knew was in network, but also the furthest node in the mesh).
+
